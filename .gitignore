@@ -1,0 +1,73 @@
+# Python 缓存与编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+.env
+
+# IDE 与编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# 调试与日志
+*.log
+*.pdb
+*.dbg
+*.dmp
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.old
+
+# 压缩包（发布产物，不入库）
+*.zip
+Release.zip
+
+# 构建产物（按需保留 .dp64/.dp32 插件二进制，因为是部署必需）
+# 如需纯源码仓库，可取消下行注释
+# *.dp64
+# *.dp32
+
+# 敏感配置（如有本地密钥/凭据）
+*.key
+*.pem
+secrets.json
+.env.local
