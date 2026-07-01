@@ -30,10 +30,16 @@ echo [2/4] Installing MCP Python package...
 python -c "import mcp" >nul 2>&1
 if errorlevel 1 (
     echo   Installing mcp package...
-    pip install mcp
+    echo   [*] Using Tsinghua mirror to speed up download...
+    REM 修复闪退Bug: pip 在 Windows 上是 pip.bat，bat 脚本里调用必须加 call
+    REM 否则控制权转移给 pip.bat 后不返回，当前脚本直接退出（这就是闪退根因）
+    REM 同时使用国内清华镜像加速，避免虚拟机访问 PyPI 超时
+    call pip install mcp -i https://pypi.tuna.tsinghua.edu.cn/simple
     if errorlevel 1 (
+        echo.
         echo   [ERROR] Failed to install mcp package.
-        echo   Try manually: pip install mcp
+        echo   Try manually: pip install mcp -i https://pypi.tuna.tsinghua.edu.cn/simple
+        echo.
         pause
         exit /b 1
     )

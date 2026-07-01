@@ -40,7 +40,8 @@ REM Check if mcp package is installed
 python -c "import mcp" >nul 2>&1
 if errorlevel 1 (
     echo [WARN] mcp package not found. Installing...
-    pip install mcp
+    REM 修复闪退Bug: pip 在 Windows 上是 pip.bat，必须用 call 调用
+    call pip install mcp -i https://pypi.tuna.tsinghua.edu.cn/simple
     if errorlevel 1 (
         echo [ERROR] Failed to install mcp package.
         pause
