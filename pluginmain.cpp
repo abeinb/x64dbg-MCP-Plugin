@@ -15078,32 +15078,65 @@ static bool start_server()
 
 PLUG_EXPORT bool pluginit(PLUG_INITSTRUCT* initStruct)
 {
-	if (!initStruct) return false;
+	// 诊断日志：确认 pluginit 被调用（如果 Log 窗口看不到这行，说明插件 DLL 根本没被加载）
+	_plugin_logprintf("[LyScript] pluginit entry called\n");
 
+	if (!initStruct) {
+		_plugin_logprintf("[LyScript] ERROR: initStruct is NULL\n");
+		return false;
+	}
+
+	// 诊断：填充基本信息
 	initStruct->pluginVersion = 2;
 	initStruct->sdkVersion = PLUG_SDKVERSION;
 	strncpy_s(initStruct->pluginName, PLUGIN_NAME, _TRUNCATE);
 	pluginHandle = initStruct->pluginHandle;
+	_plugin_logprintf("[LyScript] step 1: basic info filled, pluginHandle=%d, sdkVersion=%d\n", pluginHandle, initStruct->sdkVersion);
 
-	
-	g_server = std::make_unique<ServerContext>();
+	// 诊断：mongoose 依赖 WinSock，必须先 WSAStartup
+	// 如果不调用，mg_http_listen 会静默失败（返回 NULL）
+	WSADATA wsaData;
+	int wsaResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+	if (wsaResult != 0) {
+		_plugin_logprintf("[LyScript] ERROR: WSAStartup failed, error=%d\n", wsaResult);
+		return false;
+	}
+	_plugin_logprintf("[LyScript] step 2: WSAStartup OK (version %d.%d)\n", LOBYTE(wsaData.wVersion), HIBYTE(wsaData.wVersion));
+
+	// 诊断：构造 ServerContext（内部调用 mg_mgr_init）
+	try {
+		g_server = std::make_unique<ServerContext>();
+		_plugin_logprintf("[LyScript] step 3: ServerContext created\n");
+	} catch (const std::exception& e) {
+		_plugin_logprintf("[LyScript] ERROR: ServerContext exception: %s\n", e.what());
+		WSACleanup();
+		return false;
+	} catch (...) {
+		_plugin_logprintf("[LyScript] ERROR: ServerContext unknown exception (SEH?)\n");
+		WSACleanup();
+		return false;
+	}
+
 	// 毒舌批评修复: 绑回环地址，避免把调试器控制面暴露给整个局域网
 	// 如需远程访问，请通过 SSH 隧道或反代加认证，而非裸奔监听 0.0.0.0
 	g_server->listen_addr = "http://127.0.0.1:8000";
 	g_server->handler = new RequestHandler();
+	_plugin_logprintf("[LyScript] step 4: handler created, listen_addr=%s\n", g_server->listen_addr.c_str());
 
-	
+	// 诊断：启动 HTTP 服务器
 	if (!start_server())
 	{
-		_plugin_logprintf("[%s] Failed to start server during initialization\n", PLUGIN_NAME);
+		_plugin_logprintf("[LyScript] ERROR: start_server failed\n");
+		WSACleanup();
 		return false;
 	}
+	_plugin_logprintf("[LyScript] step 5: HTTP server started\n");
 
-	_plugin_logprintf("[%s] Version: %s\n", PLUGIN_NAME, PLUGIN_VERSION);
-	_plugin_logprintf("[%s] Author: %s\n", PLUGIN_NAME, PLUGIN_AUTHOR);
-	_plugin_logprintf("[%s] Official website: %s\n", PLUGIN_NAME, PLUGIN_WEBSITE);
-	_plugin_logprintf("[%s] Compilation date: %s\n", PLUGIN_NAME, PLUGIN_COMPILE_DATE);
-	_plugin_logprintf("[%s] Initialized successfully\n", PLUGIN_NAME);
+	_plugin_logprintf("[LyScript] Version: %s\n", PLUGIN_VERSION);
+	_plugin_logprintf("[LyScript] Author: %s\n", PLUGIN_AUTHOR);
+	_plugin_logprintf("[LyScript] Official website: %s\n", PLUGIN_WEBSITE);
+	_plugin_logprintf("[LyScript] Compilation date: %s\n", PLUGIN_COMPILE_DATE);
+	_plugin_logprintf("[LyScript] Initialized successfully, listening on %s\n", g_server->listen_addr.c_str());
 
 	return true;
 }
@@ -15129,6 +15162,7 @@ PLUG_EXPORT bool plugstop()
 	}
 
 	g_server.reset();
+	WSACleanup();
 	_plugin_logprintf("[%s] Plugin terminated\n", PLUGIN_NAME);
 	return true;
 }
