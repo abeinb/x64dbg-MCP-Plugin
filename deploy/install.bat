@@ -17,6 +17,14 @@ if errorlevel 1 (
 for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PYVER=%%v
 echo   [OK] Python %PYVER% found.
 
+REM ¶¾ÉàÅúÆÀÐÞ¸´£º¼ì²â°æ±¾ºÅ£¬mcp ÐèÒª 3.11+
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo   [ERROR] Python 3.11+ required, got %PYVER%
+    goto :error_end
+)
+echo   [OK] Python version meets 3.11+ requirement.
+
 echo.
 echo [2/4] Installing MCP package...
 python -c "import mcp" >nul 2>&1
@@ -44,9 +52,10 @@ goto :error_end
 echo.
 echo [3/4] Locating x64dbg plugins directory...
 set "X64DBG_PLUGINS="
-if exist "C:\x64dbg\x64\plugins\" set "X64DBG_PLUGINS=C:\x64dbg\x64\plugins"
-if exist "D:\x64dbg\x64\plugins\" set "X64DBG_PLUGINS=D:\x64dbg\x64\plugins"
-if exist "E:\x64dbg\x64\plugins\" set "X64DBG_PLUGINS=E:\x64dbg\x64\plugins"
+REM ¶¾ÉàÅúÆÀÐÞ¸´£º±éÀúËùÓÐÅÌ·û£¬¶ø·ÇÓ²±àÂë C/D/E
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist "%%d:\x64dbg\x64\plugins\" set "X64DBG_PLUGINS=%%d:\x64dbg\x64\plugins"
+)
 if "!X64DBG_PLUGINS!"=="" (
     echo   Could not auto-detect x64dbg plugins directory.
     set /p X64DBG_PLUGINS="  Enter x64dbg plugins path (e.g. C:\x64dbg\x64\plugins): "
@@ -68,7 +77,9 @@ if !errorlevel! neq 0 (
 )
 echo   [OK] Plugin installed.
 
-set "MCP_DIR=!X64DBG_PLUGINS!\..\..\LyScript_mcp"
+REM ¶¾ÉàÅúÆÀÐÞ¸´£ºÓÃ for Ñ­»·¹æ·¶»¯ ..\.. Â·¾¶£¬±ÜÃâÆ´½Ó³öº¬ .. µÄÔàÂ·¾¶
+for %%i in ("!X64DBG_PLUGINS!\..\..") do set "X64DBG_ROOT=%%~fi"
+set "MCP_DIR=!X64DBG_ROOT!\LyScript_mcp"
 if not exist "!MCP_DIR!\" mkdir "!MCP_DIR!"
 echo   Copying MCP server files...
 copy /Y "main.py" "!MCP_DIR!\main.py" >nul 2>&1
@@ -108,6 +119,8 @@ echo ============================================================
 echo  Installation FAILED.
 echo ============================================================
 echo.
+pause
+exit /b 1
 
 :success_end
 pause

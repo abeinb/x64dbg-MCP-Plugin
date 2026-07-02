@@ -5,15 +5,15 @@ import struct
 import shutil
 import os
 import sys
+import time
+import glob
 
 SRC = r'F:\00\LyScript_mcp\build\LyScript.dp64'
 DST = r'C:\x64dbg\x64\plugins\LyScript.dp64'
-BAK = DST + '.bak2'
 
 # x86 版本（毒舌批评要求双架构支持，用于调试 32 位卡密程序）
 SRC_X86 = r'F:\00\LyScript_mcp\build\LyScript.dp32'
 DST_X86 = r'C:\x64dbg\x32\plugins\LyScript.dp32'
-BAK_X86 = DST_X86 + '.bak'
 
 
 def rva_to_offset(rva, sections):
@@ -85,7 +85,7 @@ def parse_imports(path):
     return deps
 
 
-def deploy_one(src, dst, bak, arch_name):
+def deploy_one(src, dst, arch_name):
     """部署单个 DLL：备份旧版 + 复制新版 + 验证依赖"""
     if not os.path.exists(src):
         print(f'[ERR] {arch_name} DLL not found: {src}')
@@ -96,14 +96,14 @@ def deploy_one(src, dst, bak, arch_name):
     for d in deps:
         print(f'  - {d}')
 
-    bad = [d for d in deps if d.upper().startswith(('MSVCR', 'MSVCP', 'VCRUNTIME'))]
+    # 毒舌批评修复：补充 UCRTBASE / API-MS-WIN-CRT 检测，覆盖 UCRT 依赖缺失场景
+    bad = [d for d in deps if d.upper().startswith(('MSVCR', 'MSVCP', 'VCRUNTIME', 'UCRTBASE', 'API-MS-WIN-CRT'))]
     if bad:
         print(f'[WARN] {arch_name} still depends on VC runtime: {bad}')
     else:
-        print(f'[OK] {arch_name} no MSVCR/MSVCP/VCRUNTIME - /MT static link successful')
+        print(f'[OK] {arch_name} no MSVCR/MSVCP/VCRUNTIME/UCRTBASE - /MT static link successful')
 
     # 毒舌批评修复：用时间戳备份，避免多次运行只保留第一次的备份
-    import time
     if os.path.exists(dst):
         ts = time.strftime('%Y%m%d_%H%M%S')
         bak_ts = f'{dst}.bak.{ts}'
@@ -112,26 +112,28 @@ def deploy_one(src, dst, bak, arch_name):
         # 保留最新 .bak.latest
         latest = f'{dst}.bak.latest'
         shutil.copy2(dst, latest)
+        # 毒舌批评修复：时间戳备份只保留最近 5 份，避免无限累积占空间
+        KEEP = 5
+        baks = sorted(glob.glob(f'{dst}.bak.*'))
+        for old in baks[:-KEEP]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
 
     # 复制新 DLL
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copy2(src, dst)
     print(f'[OK] {arch_name} copied to: {dst}')
     print(f'new size: {os.path.getsize(dst)} bytes')
-
-    # 验证部署后的文件
-    print(f'=== Verify deployed {arch_name} deps ===')
-    deps2 = parse_imports(dst)
-    for d in deps2:
-        print(f'  - {d}')
     return True
 
 
 def main():
     # 部署 x64
-    ok64 = deploy_one(SRC, DST, BAK, 'x64')
+    ok64 = deploy_one(SRC, DST, 'x64')
     # 部署 x86
-    ok32 = deploy_one(SRC_X86, DST_X86, BAK_X86, 'x86')
+    ok32 = deploy_one(SRC_X86, DST_X86, 'x86')
     if not (ok64 and ok32):
         sys.exit(1)
 

@@ -1,13 +1,19 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM ¶¾ÉàÅúÆÀÐÞ¸´£ºÇ¿ÖÆ UTF-8£¬±ÜÃâÖÐÎÄ/ÌØÊâ×Ö·ûÊä³öÂÒÂë
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+chcp 65001 >nul 2>&1
+
 echo.
 echo ============================================================
 echo  LyScript MCP Server Launcher
 echo ============================================================
 echo.
 
-cd /d "%~dp0"
+REM pushd replaces cd /d to support UNC paths
+pushd "%~dp0"
 
 if not exist "main.py" (
     echo [ERROR] main.py not found in %CD%
@@ -48,8 +54,14 @@ echo [*] Press Ctrl+C to stop.
 echo.
 
 python main.py
-
+set EXITCODE=%errorlevel%
 echo.
-echo [*] MCP Server stopped.
+if %EXITCODE% == 0 (
+    echo [*] MCP Server stopped normally.
+) else (
+    echo [ERROR] MCP Server crashed with exit code %EXITCODE%.
+    echo Check log above for details.
+)
+popd
 pause
-exit /b 0
+exit /b %EXITCODE%
