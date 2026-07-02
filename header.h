@@ -679,9 +679,17 @@ std::vector<disasm> DisasmCode(duint address, int count)
 
 	int index = 0;
 
-	while (true)
+	// 毒舌批评修复: 改为有界循环，并检查 asminfo.size==0 避免地址不推进导致重复填充垃圾数据
+	while (index < count)
 	{
+		memset(&asminfo, 0, sizeof(BASIC_INSTRUCTION_INFO));
 		DbgDisasmFastAt(address, &asminfo);
+
+		// 反汇编失败（size==0 或 instruction 为空）时立即终止，避免返回脏数据
+		if (asminfo.size == 0 || asminfo.instruction[0] == '\0')
+		{
+			break;
+		}
 
 		disasm ptr = { 0 };
 
@@ -689,16 +697,14 @@ std::vector<disasm> DisasmCode(duint address, int count)
 
 		ptr.address = address;
 		ptr.size = asminfo.size;
-		strcpy(ptr.instruction, asminfo.instruction);
+		// 毒舌批评修复: 用 strncpy_s 替代 strcpy，避免缓冲区溢出
+		strncpy_s(ptr.instruction, asminfo.instruction, _TRUNCATE);
 
-		
+
 		disasm_code.push_back(ptr);
 
 		address = address + asminfo.size;
 		index = index + 1;
-
-		if (index >= count)
-			break;
 	}
 	return disasm_code;
 }

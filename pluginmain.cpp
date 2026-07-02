@@ -14845,10 +14845,31 @@ static void handle_post_request(struct mg_http_message* http_msg, struct mg_conn
 	CJsonPtr req_json(cJSON_ParseWithLength(http_msg->body.buf, http_msg->body.len));
 	if (!req_json)
 	{
-		const char* error = cJSON_GetErrorPtr() ? cJSON_GetErrorPtr() : "Unknown parse error";
-		mg_http_reply(connection, 400, "Content-Type: application/json\r\n",
-			"{\"status\": \"error\", \"error\": \"Invalid JSON: %s\", \"position\": \"%s\"}",
-			error, cJSON_GetErrorPtr() ? cJSON_GetErrorPtr() : "unknown");
+		// 毒舌批评修复: 用 cJSON 构造错误对象，避免把用户输入直接 %s 拼进 JSON 导致注入
+		// cJSON_GetErrorPtr() 返回指向用户原始请求体的指针，可能含 " \ 等破坏 JSON 结构的字符
+		cJSON* err_obj = cJSON_CreateObject();
+		if (err_obj) {
+			cJSON_AddStringToObject(err_obj, "status", "error");
+			cJSON_AddStringToObject(err_obj, "error", "Invalid JSON");
+			// 只返回错误位置的偏移量，不回显原始内容
+			size_t pos = 0;
+			if (http_msg && cJSON_GetErrorPtr()) {
+				pos = (size_t)(cJSON_GetErrorPtr() - http_msg->body.buf);
+			}
+			cJSON_AddNumberToObject(err_obj, "error_offset", (double)pos);
+			char* err_str = cJSON_PrintUnformatted(err_obj);
+			if (err_str) {
+				mg_http_reply(connection, 400, "Content-Type: application/json\r\n", "%s", err_str);
+				free(err_str);
+			} else {
+				mg_http_reply(connection, 400, "Content-Type: application/json\r\n",
+					"{\"status\":\"error\",\"error\":\"Invalid JSON\"}");
+			}
+			cJSON_Delete(err_obj);
+		} else {
+			mg_http_reply(connection, 400, "Content-Type: application/json\r\n",
+				"{\"status\":\"error\",\"error\":\"Invalid JSON\"}");
+		}
 		return;
 	}
 
@@ -14868,7 +14889,20 @@ static void handle_post_request(struct mg_http_message* http_msg, struct mg_conn
 			"{\"status\": \"error\", \"error\": \"Server context not initialized\"}");
 		return;
 	}
-	ResponseData resp_data = g_server->handler->handle_request(req_data);
+	// 毒舌批评修复: 加锁保护调试器 API 调用
+	// 原代码的 mutex 从未被 lock 过，HTTP 线程与 GUI 线程并发访问 x64dbg SDK 非线程安全 API
+	// 这里用 try/catch 确保异常路径也能解锁
+	ThreadUtils::lock_mutex(g_server->mutex);
+	ResponseData resp_data;
+	try {
+		resp_data = g_server->handler->handle_request(req_data);
+	} catch (...) {
+		ThreadUtils::unlock_mutex(g_server->mutex);
+		mg_http_reply(connection, 500, "Content-Type: application/json\r\n",
+			"{\"status\":\"error\",\"error\":\"internal exception during request handling\"}");
+		return;
+	}
+	ThreadUtils::unlock_mutex(g_server->mutex);
 
 	
 	CJsonPtr resp_json(cJSON_CreateObject());
@@ -15016,7 +15050,9 @@ PLUG_EXPORT bool pluginit(PLUG_INITSTRUCT* initStruct)
 
 	
 	g_server = std::make_unique<ServerContext>();
-	g_server->listen_addr = "http://0.0.0.0:8000";
+	// 毒舌批评修复: 绑回环地址，避免把调试器控制面暴露给整个局域网
+	// 如需远程访问，请通过 SSH 隧道或反代加认证，而非裸奔监听 0.0.0.0
+	g_server->listen_addr = "http://127.0.0.1:8000";
 	g_server->handler = new RequestHandler();
 
 	
@@ -15038,6 +15074,9 @@ PLUG_EXPORT bool pluginit(PLUG_INITSTRUCT* initStruct)
 
 PLUG_EXPORT bool plugstop()
 {
+	// 毒舌批评修复: 检查 g_server 是否存在，避免空指针解引用
+	if (!g_server) return true;
+
 	if (g_server->running)
 	{
 		_plugin_logprintf("[%s] Stopping HTTP server...\n", PLUGIN_NAME);
@@ -15060,13 +15099,16 @@ PLUG_EXPORT bool plugstop()
 
 PLUG_EXPORT void plugsetup(PLUG_SETUPSTRUCT* setupStruct)
 {
-	
+	// 毒舌批评修复: 参数与全局状态双重判空
+	if (!setupStruct) return;
+
 	hwndDlg = setupStruct->hwndDlg;
 	hMenu = setupStruct->hMenu;
 	hMenuDisasm = setupStruct->hMenuDisasm;
 	hMenuDump = setupStruct->hMenuDump;
 	hMenuStack = setupStruct->hMenuStack;
 
+	if (!g_server) return;
 	if (!g_server->running)
 	{
 		start_server();
