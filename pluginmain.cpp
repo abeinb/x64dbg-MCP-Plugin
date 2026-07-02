@@ -15117,11 +15117,19 @@ PLUG_EXPORT bool pluginit(PLUG_INITSTRUCT* initStruct)
 		return false;
 	}
 
-	// 毒舌批评修复: 绑回环地址，避免把调试器控制面暴露给整个局域网
-	// 如需远程访问，请通过 SSH 隧道或反代加认证，而非裸奔监听 0.0.0.0
-	g_server->listen_addr = "http://127.0.0.1:8000";
+	// 监听地址可配置：默认 0.0.0.0:8000（支持远程访问，如虚拟机场景）
+	// 本机场景可用环境变量 LYSCRIPT_BIND=127.0.0.1 限制为回环
+	// 注意：0.0.0.0 无鉴权，生产环境请用防火墙限制访问来源
+	const char* bind_addr = getenv("LYSCRIPT_BIND");
+	if (bind_addr == nullptr || bind_addr[0] == '\0') {
+		bind_addr = "0.0.0.0";
+	}
+	char addr_buf[256];
+	sprintf_s(addr_buf, sizeof(addr_buf), "http://%s:8000", bind_addr);
+	g_server->listen_addr = addr_buf;
 	g_server->handler = new RequestHandler();
-	_plugin_logprintf("[LyScript] step 4: handler created, listen_addr=%s\n", g_server->listen_addr.c_str());
+	_plugin_logprintf("[LyScript] step 4: handler created, listen_addr=%s (LYSCRIPT_BIND=%s)\n",
+		g_server->listen_addr.c_str(), bind_addr);
 
 	// 诊断：启动 HTTP 服务器
 	if (!start_server())
