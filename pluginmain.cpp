@@ -15009,14 +15009,14 @@ PLUG_EXPORT bool pluginit(PLUG_INITSTRUCT* initStruct)
 {
 	if (!initStruct) return false;
 
-	initStruct->pluginVersion = PLUGIN_VERSION;
+	initStruct->pluginVersion = 2;
 	initStruct->sdkVersion = PLUG_SDKVERSION;
 	strncpy_s(initStruct->pluginName, PLUGIN_NAME, _TRUNCATE);
 	pluginHandle = initStruct->pluginHandle;
 
 	
 	g_server = std::make_unique<ServerContext>();
-	g_server->listen_addr = "http:
+	g_server->listen_addr = "http://0.0.0.0:8000";
 	g_server->handler = new RequestHandler();
 
 	
@@ -15026,13 +15026,6 @@ PLUG_EXPORT bool pluginit(PLUG_INITSTRUCT* initStruct)
 		return false;
 	}
 
-#define PLUGIN_NAME "LyScript AI"
-#define PLUGIN_VERSION "2.0.0"
-#define PLUGIN_AUTHOR "RuiWang"
-#define PLUGIN_WEBSITE "https:
-#define PLUGIN_COMPILE_DATE __DATE__ " " __TIME__
-
-	
 	_plugin_logprintf("[%s] Version: %s\n", PLUGIN_NAME, PLUGIN_VERSION);
 	_plugin_logprintf("[%s] Author: %s\n", PLUGIN_NAME, PLUGIN_AUTHOR);
 	_plugin_logprintf("[%s] Official website: %s\n", PLUGIN_NAME, PLUGIN_WEBSITE);
