@@ -264,6 +264,10 @@ class PeTools:
         self.process = Process(self.http_client)
         self.gui = Gui(self.http_client)
         self.script = Script(self.http_client)
+        # 新增：全局调试器状态锁，所有 FusionTools 共用
+        # 修复毒舌审查P0 Bug：x64dbg 是单实例状态机，Wait/Run/SetBreakPoint 等状态操作
+        # 若被多个工具并发调用会竞态翻车（断点错乱/状态丢失）。所有 FusionTools 必须共用此锁串行化
+        self.debugger_lock = asyncio.Lock()
 
     async def open_debug(self, file_path: str) -> str:
         """

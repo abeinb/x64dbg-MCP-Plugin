@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM ¶¾ÉàÅúÆÀÐÞ¸´£ºÇ¿ÖÆ UTF-8£¬±ÜÃâÖÐÎÄ/ÌØÊâ×Ö·ûÊä³öÂÒÂë
+REM Force UTF-8 to avoid encoding issues with Chinese paths/output
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 chcp 65001 >nul 2>&1
@@ -15,13 +15,15 @@ echo.
 REM pushd replaces cd /d to support UNC paths
 pushd "%~dp0"
 
-if not exist "main.py" (
-    echo [ERROR] main.py not found in %CD%
-    pause
-    exit /b 1
-)
-if not exist "core.py" (
-    echo [ERROR] core.py not found in %CD%
+set "MISSING=0"
+if not exist "main.py"    ( echo [ERROR] main.py not found    & set "MISSING=1" )
+if not exist "core.py"    ( echo [ERROR] core.py not found    & set "MISSING=1" )
+if not exist "fusion.py"  ( echo [ERROR] fusion.py not found  & set "MISSING=1" )
+if not exist "fusion2.py" ( echo [ERROR] fusion2.py not found & set "MISSING=1" )
+if not exist "fusion3.py" ( echo [ERROR] fusion3.py not found & set "MISSING=1" )
+if "!MISSING!"=="1" (
+    echo.
+    echo [ERROR] Required files missing in %CD%
     pause
     exit /b 1
 )
@@ -50,6 +52,7 @@ if !errorlevel! neq 0 (
 )
 
 echo [*] Starting LyScript MCP Server...
+echo [*] Make sure x64dbg/x32dbg is running (plugin listens on port 8000).
 echo [*] Press Ctrl+C to stop.
 echo.
 

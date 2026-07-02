@@ -99,6 +99,10 @@ class FusionTools:
         self.process = petools.process
         self.gui = petools.gui
         self.script = petools.script
+        # 修复毒舌审查P0 Bug: 复用 PeTools 层级的全局调试器锁
+        # x64dbg 是单实例状态机，Wait/SetBreakPoint/Run 等状态操作必须串行化
+        # 锁提到 PeTools 层级让 fusion/fusion2/fusion3 共用，避免跨工具并发竞态
+        self._debugger_lock = petools.debugger_lock
 
     # ============================================================
     # 1. get_all_registers - 一次获取所有通用寄存器
@@ -232,110 +236,113 @@ class FusionTools:
             "current_disasm": "",
             "errors": []
         }
-        try:
-            # 第一步：等待断点/事件命中（send_command 失败会抛异常）
-            wait_result = await asyncio.to_thread(self.dbg.Wait, timeout)
-            # wait_result 形如 {"Wait":"Success","Event":"BreakpointHit"} 或 {"Wait":"Failed",...}
-            if not isinstance(wait_result, dict) or wait_result.get("Wait", "").lower() != "success":
-                # 未命中（如超时），返回当前快照与原因
-                snapshot["errors"].append(f"Wait 未成功: {wait_result}")
+        # 修复毒舌审查P0 Bug: dbg.Wait 会阻塞等待调试器状态变化，
+        # 必须持锁串行化，否则与其他工具并发 SetBreakPoint/Run 会竞态翻车
+        async with self._debugger_lock:
+            try:
+                # 第一步：等待断点/事件命中（send_command 失败会抛异常）
+                wait_result = await asyncio.to_thread(self.dbg.Wait, timeout)
+                # wait_result 形如 {"Wait":"Success","Event":"BreakpointHit"} 或 {"Wait":"Failed",...}
+                if not isinstance(wait_result, dict) or wait_result.get("Wait", "").lower() != "success":
+                    # 未命中（如超时），返回当前快照与原因
+                    snapshot["errors"].append(f"Wait 未成功: {wait_result}")
+                    return _fmt_success(snapshot)
+
+                snapshot["breakpoint_hit"] = True
+
+                # 第二步：并行采集寄存器 + 调用栈（两者无依赖）
+                reg_list = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi",
+                            "rbp", "rsp", "r8", "r9", "r10", "r11",
+                            "r12", "r13", "r14", "r15", "rip", "EFLAGS"]
+                regs_task = asyncio.to_thread(self.dbg.get_register, reg_list, 5.0)
+                callstack_task = asyncio.to_thread(self.script.RunCmd, "k", 5.0)
+                regs_result, callstack_result = await asyncio.gather(
+                    regs_task, callstack_task, return_exceptions=True
+                )
+
+                # 处理寄存器结果
+                rip_val = None
+                rsp_val = None
+                if isinstance(regs_result, Exception):
+                    # 记录完整堆栈到日志，快照 errors 记录摘要
+                    logger.exception("快照：获取寄存器失败")
+                    snapshot["errors"].append(f"registers: {regs_result}")
+                elif isinstance(regs_result, dict):
+                    snapshot["registers"] = regs_result
+                    rip_val = regs_result.get("RIP")
+                    rsp_val = regs_result.get("RSP")
+                else:
+                    snapshot["errors"].append(f"registers: 返回类型异常 {type(regs_result)}")
+
+                # 处理调用栈结果
+                if isinstance(callstack_result, Exception):
+                    logger.exception("快照：获取调用栈失败")
+                    snapshot["call_stack"] = ""
+                    snapshot["errors"].append(f"call_stack: {callstack_result}")
+                elif isinstance(callstack_result, dict):
+                    snapshot["call_stack"] = callstack_result.get("RunCmd", json.dumps(callstack_result, ensure_ascii=False))
+                else:
+                    snapshot["call_stack"] = str(callstack_result)
+
+                # 第三步：拿到 rip/rsp 后，反汇编与栈读取真并行（gather）
+                # rip_val/rsp_val 判断改为 is not None and != ""（避免 0 地址被误判）
+                phase2_tasks = []
+                phase2_names = []
+
+                if rip_val is not None and rip_val != "":
+                    # DisasmCountCode(address, count, timeout)：反汇编 5 条
+                    phase2_tasks.append(asyncio.to_thread(self.dissasm.DisasmCountCode, rip_val, 5, 5.0))
+                    phase2_names.append("disasm")
+                else:
+                    snapshot["errors"].append("disasm: rip 为空，跳过反汇编")
+
+                if rsp_val is not None and rsp_val != "":
+                    # ReadDword 接收地址列表，每个地址读 4 字节；64 个 dword = 256 字节栈
+                    try:
+                        rsp_int = _parse_addr(str(rsp_val))
+                        stack_addr_list = _build_addr_list(rsp_int, 64, 4)
+                        phase2_tasks.append(asyncio.to_thread(self.memory.ReadDword, stack_addr_list, 5.0))
+                        phase2_names.append("stack")
+                    except Exception as e:
+                        logger.exception("快照：解析 rsp 构造栈地址列表失败")
+                        snapshot["errors"].append(f"stack: 解析 rsp 失败 {e}")
+                else:
+                    snapshot["errors"].append("stack: rsp 为空，跳过栈读取")
+
+                # 并行执行第二阶段任务
+                if phase2_tasks:
+                    phase2_results = await asyncio.gather(*phase2_tasks, return_exceptions=True)
+                    for name, res in zip(phase2_names, phase2_results):
+                        if isinstance(res, Exception):
+                            logger.exception("快照：%s 子任务失败", name)
+                            snapshot["errors"].append(f"{name}: {res}")
+                            continue
+                        if name == "disasm":
+                            # DisasmCountCode 返回 dict，取 result 字段或整体
+                            if isinstance(res, dict):
+                                snapshot["current_disasm"] = res.get("result", res)
+                            else:
+                                snapshot["current_disasm"] = str(res)
+                        elif name == "stack":
+                            # ReadDword 返回 {addr: "0x..."}，按地址列表顺序提取
+                            if isinstance(res, dict):
+                                stack_rows = []
+                                for i, addr_str in enumerate(stack_addr_list):
+                                    val = res.get(addr_str)
+                                    if val is not None:
+                                        stack_rows.append({
+                                            "offset": i * 4,
+                                            "addr": addr_str,
+                                            "value": val
+                                        })
+                                snapshot["stack_data"] = stack_rows
+                            else:
+                                snapshot["errors"].append(f"stack: 返回类型异常 {type(res)}")
+
                 return _fmt_success(snapshot)
-
-            snapshot["breakpoint_hit"] = True
-
-            # 第二步：并行采集寄存器 + 调用栈（两者无依赖）
-            reg_list = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi",
-                        "rbp", "rsp", "r8", "r9", "r10", "r11",
-                        "r12", "r13", "r14", "r15", "rip", "EFLAGS"]
-            regs_task = asyncio.to_thread(self.dbg.get_register, reg_list, 5.0)
-            callstack_task = asyncio.to_thread(self.script.RunCmd, "k", 5.0)
-            regs_result, callstack_result = await asyncio.gather(
-                regs_task, callstack_task, return_exceptions=True
-            )
-
-            # 处理寄存器结果
-            rip_val = None
-            rsp_val = None
-            if isinstance(regs_result, Exception):
-                # 记录完整堆栈到日志，快照 errors 记录摘要
-                logger.exception("快照：获取寄存器失败")
-                snapshot["errors"].append(f"registers: {regs_result}")
-            elif isinstance(regs_result, dict):
-                snapshot["registers"] = regs_result
-                rip_val = regs_result.get("RIP")
-                rsp_val = regs_result.get("RSP")
-            else:
-                snapshot["errors"].append(f"registers: 返回类型异常 {type(regs_result)}")
-
-            # 处理调用栈结果
-            if isinstance(callstack_result, Exception):
-                logger.exception("快照：获取调用栈失败")
-                snapshot["call_stack"] = ""
-                snapshot["errors"].append(f"call_stack: {callstack_result}")
-            elif isinstance(callstack_result, dict):
-                snapshot["call_stack"] = callstack_result.get("RunCmd", json.dumps(callstack_result, ensure_ascii=False))
-            else:
-                snapshot["call_stack"] = str(callstack_result)
-
-            # 第三步：拿到 rip/rsp 后，反汇编与栈读取真并行（gather）
-            # rip_val/rsp_val 判断改为 is not None and != ""（避免 0 地址被误判）
-            phase2_tasks = []
-            phase2_names = []
-
-            if rip_val is not None and rip_val != "":
-                # DisasmCountCode(address, count, timeout)：反汇编 5 条
-                phase2_tasks.append(asyncio.to_thread(self.dissasm.DisasmCountCode, rip_val, 5, 5.0))
-                phase2_names.append("disasm")
-            else:
-                snapshot["errors"].append("disasm: rip 为空，跳过反汇编")
-
-            if rsp_val is not None and rsp_val != "":
-                # ReadDword 接收地址列表，每个地址读 4 字节；64 个 dword = 256 字节栈
-                try:
-                    rsp_int = _parse_addr(str(rsp_val))
-                    stack_addr_list = _build_addr_list(rsp_int, 64, 4)
-                    phase2_tasks.append(asyncio.to_thread(self.memory.ReadDword, stack_addr_list, 5.0))
-                    phase2_names.append("stack")
-                except Exception as e:
-                    logger.exception("快照：解析 rsp 构造栈地址列表失败")
-                    snapshot["errors"].append(f"stack: 解析 rsp 失败 {e}")
-            else:
-                snapshot["errors"].append("stack: rsp 为空，跳过栈读取")
-
-            # 并行执行第二阶段任务
-            if phase2_tasks:
-                phase2_results = await asyncio.gather(*phase2_tasks, return_exceptions=True)
-                for name, res in zip(phase2_names, phase2_results):
-                    if isinstance(res, Exception):
-                        logger.exception("快照：%s 子任务失败", name)
-                        snapshot["errors"].append(f"{name}: {res}")
-                        continue
-                    if name == "disasm":
-                        # DisasmCountCode 返回 dict，取 result 字段或整体
-                        if isinstance(res, dict):
-                            snapshot["current_disasm"] = res.get("result", res)
-                        else:
-                            snapshot["current_disasm"] = str(res)
-                    elif name == "stack":
-                        # ReadDword 返回 {addr: "0x..."}，按地址列表顺序提取
-                        if isinstance(res, dict):
-                            stack_rows = []
-                            for i, addr_str in enumerate(stack_addr_list):
-                                val = res.get(addr_str)
-                                if val is not None:
-                                    stack_rows.append({
-                                        "offset": i * 4,
-                                        "addr": addr_str,
-                                        "value": val
-                                    })
-                            snapshot["stack_data"] = stack_rows
-                        else:
-                            snapshot["errors"].append(f"stack: 返回类型异常 {type(res)}")
-
-            return _fmt_success(snapshot)
-        except Exception as e:
-            logger.exception("断点快照捕获失败")
-            return _fmt_error("断点快照捕获失败", e)
+            except Exception as e:
+                logger.exception("断点快照捕获失败")
+                return _fmt_error("断点快照捕获失败", e)
 
     # ============================================================
     # 4. set_conditional_breakpoint - 条件断点（带命令注入防护）

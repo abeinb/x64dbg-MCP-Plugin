@@ -220,7 +220,9 @@ class FusionTools3:
         # x64dbg 是单实例状态机，多个工具同时 Wait/Run/SetBreakPoint 会竞态翻车
         # 所有调试器状态操作（SetHardwareBreakPoint/Wait/Run/StepOver/DeleteHardwareBreakPoint）
         # 必须通过此锁串行化
-        self._debugger_lock = asyncio.Lock()
+        # 修复毒舌审查P0 Bug-2: 锁必须提到 PeTools 层级，让所有 FusionTools 共用同一把锁
+        # 否则 fusion/fusion2/fusion3 各持自己的锁仍会跨工具并发竞态
+        self._debugger_lock = petools.debugger_lock
 
     # ============================================================
     # @property 延迟加载（参考 fusion2.py）
@@ -628,7 +630,9 @@ class FusionTools3:
     # 命令分隔符黑名单：x64dbg 支持分号/换行串联多条命令，必须禁止
     _CMD_SEPARATOR_RE = re.compile(r'[;\n\r`]')
     # 整条命令安全字符白名单：字母数字 + 空格 + 括号 + 逗号 + 0x 十六进制 + 引号 + 运算符
-    _CMD_FULL_RE = re.compile(r'^(?:0x[0-9a-fA-F]+|[a-zA-Z0-9_(),\s\[\]\-+*/.:"])')
+    # 毒舌批评修复: 必须加 + 量词和 $ 结尾锚点，否则只校验第一个字符
+    # 原 .match 只锚开头，"findref(0x401000)<任意垃圾>" 全部通过
+    _CMD_FULL_RE = re.compile(r'^(?:0x[0-9a-fA-F]+|[a-zA-Z0-9_(),\s\[\]\-+*/.:"])+$')
 
     async def exec_x64dbg_command_safe(self, cmd: str, timeout: float = 10.0) -> str:
         """
@@ -669,7 +673,8 @@ class FusionTools3:
                 )
 
             # 修复毒舌审查P0 Bug: 第四步整条命令字符白名单校验（防绕过）
-            if not self._CMD_FULL_RE.match(clean_cmd):
+            # 毒舌批评修复: 用 fullmatch 替代 match，配合 $ 锚点确保整条命令校验
+            if not self._CMD_FULL_RE.fullmatch(clean_cmd):
                 return _fmt_error("命令含非法字符", clean_cmd)
 
             # 执行命令
