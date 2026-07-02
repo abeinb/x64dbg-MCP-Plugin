@@ -103,9 +103,9 @@ def build(arch):
     # /O2 速度优化
     # /MT 静态链接 CRT（关键：避免 MSVCR120/MSVCP120 依赖）
     # /LD 编译为 DLL
-    # /EHsc C++ 异常模型（毒舌批评要求）
+    # /EHa 让 catch(...) 也能捕获 SEH 异常（访问违规等），毒舌批评修复
     # /utf-8 源文件编码（毒舌批评要求）
-    common_flags = '/O2 /MT /LD /EHsc /utf-8 /D_USRDLL /D_CRT_SECURE_NO_WARNINGS /D_WINSOCK_DEPRECATED_NO_WARNINGS'.split()
+    common_flags = '/O2 /MT /LD /EHa /utf-8 /D_USRDLL /D_CRT_SECURE_NO_WARNINGS /D_WINSOCK_DEPRECATED_NO_WARNINGS'.split()
 
     if arch == 'x64':
         arch_flags = ['/D_WIN64']

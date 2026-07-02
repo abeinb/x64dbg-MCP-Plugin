@@ -96,6 +96,40 @@ public:
 };
 
 
+// 毒舌批评修复: RAII 锁，确保异常路径也能解锁
+// 配合 /EHa 编译选项，catch(...) 可捕获 SEH 异常（访问违规等）
+// 原 try/catch + /EHsc 组合下，SEH 异常不会被捕获，导致 mutex 永远不会解锁
+class MutexLockGuard {
+public:
+	explicit MutexLockGuard(ThreadUtils::MutexHandle mutex) : m_mutex(mutex), m_locked(false) {
+		if (m_mutex) {
+			DWORD r = WaitForSingleObject(m_mutex, INFINITE);
+			// 毒舌批评修复: 检查 WAIT_ABANDONED，避免拿脏锁
+			if (r == WAIT_OBJECT_0) {
+				m_locked = true;
+			} else if (r == WAIT_ABANDONED) {
+				_plugin_logprintf("[LyScript] WARNING: mutex abandoned, state may be corrupt\n");
+				m_locked = true; // 仍获得所有权，但标记可能脏
+			} else {
+				_plugin_logprintf("[LyScript] WARNING: lock_mutex failed, error=%u\n", GetLastError());
+			}
+		}
+	}
+	~MutexLockGuard() {
+		if (m_locked && m_mutex) {
+			ReleaseMutex(m_mutex);
+		}
+	}
+	bool is_locked() const { return m_locked; }
+	// 禁止拷贝，避免双重释放
+	MutexLockGuard(const MutexLockGuard&) = delete;
+	MutexLockGuard& operator=(const MutexLockGuard&) = delete;
+private:
+	ThreadUtils::MutexHandle m_mutex;
+	bool m_locked;
+};
+
+
 class ServerContext
 {
 public:
@@ -14853,8 +14887,11 @@ static void handle_post_request(struct mg_http_message* http_msg, struct mg_conn
 			cJSON_AddStringToObject(err_obj, "error", "Invalid JSON");
 			// 只返回错误位置的偏移量，不回显原始内容
 			size_t pos = 0;
-			if (http_msg && cJSON_GetErrorPtr()) {
-				pos = (size_t)(cJSON_GetErrorPtr() - http_msg->body.buf);
+			// 毒舌批评修复: 加范围检查，避免 cJSON_GetErrorPtr() 指向 body 之外导致信息泄露或越界
+			const char* err_ptr = cJSON_GetErrorPtr();
+			if (http_msg && err_ptr && err_ptr >= http_msg->body.buf
+				&& err_ptr < http_msg->body.buf + http_msg->body.len) {
+				pos = (size_t)(err_ptr - http_msg->body.buf);
 			}
 			cJSON_AddNumberToObject(err_obj, "error_offset", (double)pos);
 			char* err_str = cJSON_PrintUnformatted(err_obj);
@@ -14891,18 +14928,17 @@ static void handle_post_request(struct mg_http_message* http_msg, struct mg_conn
 	}
 	// 毒舌批评修复: 加锁保护调试器 API 调用
 	// 原代码的 mutex 从未被 lock 过，HTTP 线程与 GUI 线程并发访问 x64dbg SDK 非线程安全 API
-	// 这里用 try/catch 确保异常路径也能解锁
-	ThreadUtils::lock_mutex(g_server->mutex);
-	ResponseData resp_data;
-	try {
-		resp_data = g_server->handler->handle_request(req_data);
-	} catch (...) {
-		ThreadUtils::unlock_mutex(g_server->mutex);
-		mg_http_reply(connection, 500, "Content-Type: application/json\r\n",
-			"{\"status\":\"error\",\"error\":\"internal exception during request handling\"}");
+	// 改用 RAII 锁（MutexLockGuard），配合 /EHa 编译选项，异常路径也能自动解锁
+	// 原 try/catch + /EHsc 组合无法捕获 SEH 异常（访问违规），导致 mutex 永远不会解锁
+	MutexLockGuard lock(g_server->mutex);
+	if (!lock.is_locked()) {
+		// 毒舌批评修复: 加锁失败时返回 503，避免无锁状态下访问调试器 API
+		mg_http_reply(connection, 503, "Content-Type: application/json\r\n",
+			"{\"status\":\"error\",\"error\":\"debugger state possibly corrupt\"}");
 		return;
 	}
-	ThreadUtils::unlock_mutex(g_server->mutex);
+	ResponseData resp_data = g_server->handler->handle_request(req_data);
+	// RAII 析构自动解锁，无需 catch
 
 	
 	CJsonPtr resp_json(cJSON_CreateObject());
@@ -14955,7 +14991,8 @@ static void ev_handler(struct mg_connection* connection, int ev, void* ev_data)
 			const char* description = "x64dbg HTTP Debugging Interface";
 			const char* compile_date = __DATE__;
 			const char* compile_time = __TIME__;
-			const char* supported_apis = "Debugger.Wait, Debugger.Run"; 
+			// 毒舌批评修复: 列出实际支持的主要接口分类，原值只列了两个具体接口名误导用户
+			const char* supported_apis = "Debugger, Memory, Module, Process, Script, Gui, Dissassembly";
 
 			
 			mg_http_reply(connection, 200, "Content-Type: application/json\r\n",
